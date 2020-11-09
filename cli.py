@@ -40,13 +40,13 @@ def main():
 
     ## Model parameters
     parser.add_argument("--checkpoint", type=str)
-    parser.add_argument("--do_lowercase", action='store_true', default=True)
+    parser.add_argument("--do_lowercase", action='store_true', default=False)
+    parser.add_argument("--model_name", type=str)
 
     # Preprocessing/decoding-related parameters
     parser.add_argument('--max_input_length', type=int, default=32)
     parser.add_argument('--max_output_length', type=int, default=20)
     parser.add_argument('--num_beams', type=int, default=4)
-    parser.add_argument("--append_another_bos", action='store_true', default=False)
 
     # Training-related parameters
     parser.add_argument("--train_batch_size", default=40, type=int,

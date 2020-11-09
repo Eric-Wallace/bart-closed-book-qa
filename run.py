@@ -2,14 +2,13 @@ import os
 import numpy as np
 import torch
 
-from transformers import BartTokenizer, BartConfig
 from transformers import AdamW, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 from data import QAData
-from bart import MyBart
 
 def run(args, logger):
-    tokenizer = BartTokenizer.from_pretrained("bart-large")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
     train_data = QAData(logger, args, args.train_file, True)
     dev_data = QAData(logger, args, args.predict_file, False)
@@ -28,10 +27,9 @@ def run(args, logger):
                         return key[7:]
                     return key
                 return {_convert(key):value for key, value in state_dict.items()}
-            model = MyBart.from_pretrained("bart-large",
-                                           state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
+            model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name, state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
         else:
-            model = MyBart.from_pretrained("bart-large")
+            model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name)
         if args.n_gpu>1:
             model = torch.nn.DataParallel(model)
 
@@ -57,8 +55,7 @@ def run(args, logger):
                     return key[7:]
                 return key
             return {_convert(key):value for key, value in state_dict.items()}
-        model = MyBart.from_pretrained("bart-large",
-                                       state_dict=convert_to_single_gpu(torch.load(checkpoint)))
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name, state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
@@ -74,14 +71,15 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
     stop_training=False
 
     logger.info("Starting training!")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     for epoch in range(int(args.num_train_epochs)):
         for batch in train_data.dataloader:
             global_step += 1
             if torch.cuda.is_available():
                 batch = [b.to(torch.device("cuda")) for b in batch]
+            batch[2][batch[2] == 0] = -100 # -100 is the canceled loss index
             loss = model(input_ids=batch[0], attention_mask=batch[1],
-                         decoder_input_ids=batch[2], decoder_attention_mask=batch[3],
-                         is_training=True)
+                         labels=batch[2], decoder_attention_mask=batch[3], return_dict=True).loss
             if args.n_gpu > 1:
                 loss = loss.mean() # mean() to average on multi-gpu.
             if torch.isnan(loss).data:
@@ -99,6 +97,7 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
 
             if global_step % args.eval_period == 0:
                 model.eval()
+                logger.info("Evaluating!")
                 curr_em = inference(model if args.n_gpu==1 else model.module, dev_data)
                 logger.info("Step %d Train loss %.2f %s %.2f%% on epoch=%d" % (
                         global_step,
@@ -125,22 +124,24 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
             break
 
 def inference(model, dev_data, save_predictions=False):
-    predictions = []
-    bos_token_id = dev_data.tokenizer.bos_token_id
-    for i, batch in enumerate(dev_data.dataloader):
-        if torch.cuda.is_available():
-            batch = [b.to(torch.device("cuda")) for b in batch]
-        outputs = model.generate(input_ids=batch[0],
-                                 attention_mask=batch[1],
-                                 num_beams=dev_data.args.num_beams,
-                                 max_length=dev_data.args.max_output_length,
-                                 early_stopping=True,)
-        for input_, output in zip(batch[0], outputs):
-            pred = dev_data.decode(output)
-            predictions.append(pred)
-    if save_predictions:
-        dev_data.save_predictions(predictions)
-    return np.mean(dev_data.evaluate(predictions))
+    with torch.no_grad():
+        predictions = []
+        bos_token_id = dev_data.tokenizer.bos_token_id
+        for i, batch in enumerate(dev_data.dataloader):
+            if torch.cuda.is_available():
+                batch = [b.to(torch.device("cuda")) for b in batch]
+            outputs = model.generate(input_ids=batch[0],
+                                     attention_mask=batch[1],
+                                     num_beams=dev_data.args.num_beams,
+                                     max_length=dev_data.args.max_output_length,
+                                     early_stopping=True,)
+            for input_, output in zip(batch[0], outputs):
+                pred = dev_data.decode(output)
+                predictions.append(pred)
+        if save_predictions:
+            dev_data.save_predictions(predictions)
+        print(predictions[0:10])
+        return np.mean(dev_data.evaluate(predictions))
 
 
 
